@@ -31,6 +31,7 @@ try:
     import numpy as np;
     import os;
     from realesrgan import RealESRGANer;
+    from realesrgan.archs.srvgg_arch import SRVGGNetCompact;
     import sys;
     import torch;
     from tqdm import tqdm;
@@ -47,13 +48,24 @@ except ImportError as import_error:
 DEFAULT_MODEL_NAME = "remacri";
 MODEL_SCALE = 4;
 MODEL_NAME_SET = {
+    "realanime",
+    "realdigital",
     "realesrgan",
     "realesrnet",
     "remacri",
     "ultramix",
     "ultrasharp",
     };
+MODEL_BLOCK_COUNT = {
+    "realdigital": 6,
+    };
+DEFAULT_MODEL_BLOCK_COUNT = 23;
+SRVGG_MODEL_NAME_SET = {
+    "realanime",
+    };
+DEFAULT_SRVGG_CONV_COUNT = 16;
 DEFAULT_MAX_RATIO = 4.0;
+DEFAULT_AVIF_COMPRESSION = 85;
 DEFAULT_JPEG_COMPRESSION = 85;
 DEFAULT_WEBP_COMPRESSION = 85;
 DEFAULT_TILE_SIZE = 400;
@@ -61,7 +73,13 @@ DEFAULT_ALPHA_COLOR = "FFFFFF";
 DEFAULT_ALPHA_MODE = "lanczos";
 DEFAULT_OUTPUT_IMAGE_FILE_PATH_TEMPLATE = "{d}{s}.png";
 ALPHA_MODE_SET = { "lanczos", "realesrnet", "remove" };
-SUPPORTED_IMAGE_EXTENSION_SET = { ".jpg", ".jpeg", ".png", ".webp" };
+SUPPORTED_IMAGE_EXTENSION_SET = {
+    ".avif",
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp"
+    };
 
 APPLICATION_FOLDER_PATH = os.path.dirname( os.path.abspath( __file__ ) ) + "/";
 MODEL_FOLDER_PATH = APPLICATION_FOLDER_PATH + "MODEL/";
@@ -74,7 +92,7 @@ class SharpRealESRGANer( RealESRGANer ):
         self,
         scale: int,
         model_path: str,
-        model: RRDBNet,
+        model: torch.nn.Module,
         tile: int = 0,
         tile_pad: int = 10,
         pre_pad: int = 0,
@@ -315,6 +333,20 @@ def parse_arguments(
         );
 
     argument_parser.add_argument(
+        "--min-width",
+        type=int,
+        default=0,
+        help="Minimum output width in pixels (0 = no limit)"
+        );
+
+    argument_parser.add_argument(
+        "--min-height",
+        type=int,
+        default=0,
+        help="Minimum output height in pixels (0 = no limit)"
+        );
+
+    argument_parser.add_argument(
         "--max-ratio",
         type=float,
         default=DEFAULT_MAX_RATIO,
@@ -336,6 +368,26 @@ def parse_arguments(
         );
 
     argument_parser.add_argument(
+        "--max-upscaled-width",
+        type=int,
+        default=0,
+        help=(
+            "Maximum output width in pixels when upscaling "
+            "(0 = no limit)"
+            )
+        );
+
+    argument_parser.add_argument(
+        "--max-upscaled-height",
+        type=int,
+        default=0,
+        help=(
+            "Maximum output height in pixels when upscaling "
+            "(0 = no limit)"
+            )
+        );
+
+    argument_parser.add_argument(
         "--tile-size",
         type=int,
         default=DEFAULT_TILE_SIZE,
@@ -353,7 +405,14 @@ def parse_arguments(
         "--compression",
         type=int,
         default=None,
-        help="Set both JPEG and WebP compression quality"
+        help="Set AVIF, JPEG, and WebP compression quality"
+        );
+
+    argument_parser.add_argument(
+        "--avif-compression",
+        type=int,
+        default=None,
+        help=f"AVIF compression quality (default: {DEFAULT_AVIF_COMPRESSION})"
         );
 
     argument_parser.add_argument(
@@ -375,7 +434,7 @@ def parse_arguments(
         choices=sorted( ALPHA_MODE_SET ),
         default=DEFAULT_ALPHA_MODE,
         help=(
-            "Alpha channel handling for PNG/WebP inputs: "
+            "Alpha channel handling for AVIF/PNG/WebP inputs: "
             "lanczos = Lanczos upscale and preserve alpha; "
             "realesrnet = AI upscale alpha with RealESRNet; "
             "remove = composite onto --alpha-color and drop alpha "
@@ -404,12 +463,17 @@ def parse_arguments(
 
 def resolve_compression_settings(
     command_line_arguments: argparse.Namespace
-    ) -> tuple[ int, int ]:
+    ) -> tuple[ int, int, int ]:
 
+    avif_compression = command_line_arguments.avif_compression;
     jpeg_compression = command_line_arguments.jpeg_compression;
     webp_compression = command_line_arguments.webp_compression;
 
     if command_line_arguments.compression is not None:
+
+        if avif_compression is None:
+
+            avif_compression = command_line_arguments.compression;
 
         if jpeg_compression is None:
 
@@ -419,6 +483,10 @@ def resolve_compression_settings(
 
             webp_compression = command_line_arguments.compression;
 
+    if avif_compression is None:
+
+        avif_compression = DEFAULT_AVIF_COMPRESSION;
+
     if jpeg_compression is None:
 
         jpeg_compression = DEFAULT_JPEG_COMPRESSION;
@@ -427,7 +495,7 @@ def resolve_compression_settings(
 
         webp_compression = DEFAULT_WEBP_COMPRESSION;
 
-    return jpeg_compression, webp_compression;
+    return avif_compression, jpeg_compression, webp_compression;
 
 # ~~
 
@@ -502,7 +570,54 @@ def validate_output_image_file_name_template(
     if not is_loadable_image_extension( output_extension ):
 
         print(
-            "Output image file name template must produce a .jpg, .jpeg, .png, or .webp file.",
+            "Output image file name template must produce a "
+            ".avif, .jpg, .jpeg, .png, or .webp file.",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+# ~~
+
+def validate_minimum_dimensions(
+    minimum_width: int,
+    minimum_height: int
+    ) -> None:
+
+    if minimum_width < 0:
+
+        print(
+            f"Minimum width must be 0 or greater: {minimum_width}",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+    if minimum_height < 0:
+
+        print(
+            f"Minimum height must be 0 or greater: {minimum_height}",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+# ~~
+
+def validate_maximum_upscaled_dimensions(
+    maximum_upscaled_width: int,
+    maximum_upscaled_height: int
+    ) -> None:
+
+    if maximum_upscaled_width < 0:
+
+        print(
+            f"Maximum upscaled width must be 0 or greater: {maximum_upscaled_width}",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+    if maximum_upscaled_height < 0:
+
+        print(
+            f"Maximum upscaled height must be 0 or greater: {maximum_upscaled_height}",
             file=sys.stderr
             );
         sys.exit( 1 );
@@ -679,7 +794,46 @@ def get_state_dict_from_model_checkpoint(
 
 # ~~
 
+def get_model_block_count(
+    model_name: str
+    ) -> int:
+
+    return MODEL_BLOCK_COUNT.get( model_name, DEFAULT_MODEL_BLOCK_COUNT );
+
+# ~~
+
+def get_model(
+    model_name: str
+    ) -> torch.nn.Module:
+
+    if model_name in SRVGG_MODEL_NAME_SET:
+
+        return (
+            SRVGGNetCompact(
+                num_in_ch=3,
+                num_out_ch=3,
+                num_feat=64,
+                num_conv=DEFAULT_SRVGG_CONV_COUNT,
+                upscale=MODEL_SCALE,
+                act_type="prelu"
+                )
+            );
+
+    return (
+        RRDBNet(
+            num_in_ch=3,
+            num_out_ch=3,
+            num_feat=64,
+            num_block=get_model_block_count( model_name ),
+            num_grow_ch=32,
+            scale=MODEL_SCALE
+            )
+        );
+
+# ~~
+
 def get_upsampler(
+    model_name: str,
     model_weights_file_path: str,
     tile_size: int
     ) -> SharpRealESRGANer:
@@ -690,22 +844,11 @@ def get_upsampler(
 
         print( "CUDA not available; using CPU (slow).", file=sys.stderr );
 
-    model = (
-        RRDBNet(
-            num_in_ch=3,
-            num_out_ch=3,
-            num_feat=64,
-            num_block=23,
-            num_grow_ch=32,
-            scale=MODEL_SCALE
-            )
-        );
-
     return (
         SharpRealESRGANer(
             scale=MODEL_SCALE,
             model_path=model_weights_file_path,
-            model=model,
+            model=get_model( model_name ),
             tile=tile_size,
             tile_pad=10,
             pre_pad=0,
@@ -716,21 +859,47 @@ def get_upsampler(
 
 # ~~
 
-def get_output_dimensions(
+def input_image_meets_minimum_dimensions(
     input_width: int,
     input_height: int,
-    maximum_ratio: float,
+    minimum_width: int,
+    minimum_height: int
+    ) -> bool:
+
+    return (
+        ( minimum_width == 0 or input_width >= minimum_width )
+        and ( minimum_height == 0 or input_height >= minimum_height )
+        );
+
+# ~~
+
+def get_minimum_scale(
+    input_width: int,
+    input_height: int,
+    minimum_width: int,
+    minimum_height: int
+    ) -> float:
+
+    minimum_scale = 1.0;
+
+    if minimum_width > 0:
+
+        minimum_scale = max( minimum_scale, minimum_width / input_width );
+
+    if minimum_height > 0:
+
+        minimum_scale = max( minimum_scale, minimum_height / input_height );
+
+    return minimum_scale;
+
+# ~~
+
+def apply_maximum_dimension_limits(
+    output_width: int,
+    output_height: int,
     maximum_width: int,
     maximum_height: int
     ) -> tuple[ int, int ]:
-
-    output_width = int( round( input_width * MODEL_SCALE ) );
-    output_height = int( round( input_height * MODEL_SCALE ) );
-
-    if maximum_ratio < MODEL_SCALE:
-
-        output_width = int( round( input_width * maximum_ratio ) );
-        output_height = int( round( input_height * maximum_ratio ) );
 
     if maximum_width == 0 and maximum_height == 0:
 
@@ -766,6 +935,81 @@ def needs_upscaling(
 
 # ~~
 
+def get_output_dimensions(
+    input_width: int,
+    input_height: int,
+    maximum_ratio: float,
+    minimum_width: int,
+    minimum_height: int,
+    maximum_width: int,
+    maximum_height: int,
+    maximum_upscaled_width: int,
+    maximum_upscaled_height: int
+    ) -> tuple[ int, int ]:
+
+    has_minimum_constraint = minimum_width > 0 or minimum_height > 0;
+
+    if has_minimum_constraint:
+
+        if input_image_meets_minimum_dimensions(
+            input_width,
+            input_height,
+            minimum_width,
+            minimum_height
+            ):
+
+            output_width = input_width;
+            output_height = input_height;
+
+        else:
+
+            output_scale = get_minimum_scale(
+                input_width,
+                input_height,
+                minimum_width,
+                minimum_height
+                );
+
+            if output_scale > maximum_ratio:
+
+                output_scale = maximum_ratio;
+
+            output_width = int( round( input_width * output_scale ) );
+            output_height = int( round( input_height * output_scale ) );
+
+    else:
+
+        output_width = int( round( input_width * MODEL_SCALE ) );
+        output_height = int( round( input_height * MODEL_SCALE ) );
+
+        if maximum_ratio < MODEL_SCALE:
+
+            output_width = int( round( input_width * maximum_ratio ) );
+            output_height = int( round( input_height * maximum_ratio ) );
+
+    if needs_upscaling(
+        input_width,
+        input_height,
+        output_width,
+        output_height
+        ):
+
+        output_width, output_height = apply_maximum_dimension_limits(
+            output_width,
+            output_height,
+            maximum_upscaled_width,
+            maximum_upscaled_height
+            );
+
+    return apply_maximum_dimension_limits(
+        output_width,
+        output_height,
+        maximum_width,
+        maximum_height
+        );
+
+# ~~
+
 def get_resized_image(
     input_image: np.ndarray,
     output_width: int,
@@ -780,9 +1024,113 @@ def get_resized_image(
 
 # ~~
 
+_is_avif_opener_registered = False;
+
+def register_avif_opener(
+    ) -> None:
+
+    global _is_avif_opener_registered;
+
+    if _is_avif_opener_registered:
+
+        return;
+
+    try:
+
+        from pillow_avif import register_avif_opener as register_opener;
+
+    except ImportError as import_error:
+
+        print(
+            f"Missing AVIF dependency: {import_error}",
+            file=sys.stderr
+            );
+        print(
+            "Install with: run install_packages.bat",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+    register_opener();
+    _is_avif_opener_registered = True;
+
+# ~~
+
+def get_bgr_image_and_alpha_channel_from_pil_image(
+    pil_image
+    ) -> tuple[ np.ndarray, np.ndarray | None ]:
+
+    if pil_image.mode == "RGBA":
+
+        rgba_image = np.array( pil_image );
+        bgr_image = cv2.cvtColor( rgba_image, cv2.COLOR_RGBA2BGR );
+        alpha_channel = rgba_image[ :, :, 3 ];
+
+        return bgr_image, alpha_channel;
+
+    if pil_image.mode == "LA":
+
+        rgba_image = np.array( pil_image.convert( "RGBA" ) );
+        bgr_image = cv2.cvtColor( rgba_image, cv2.COLOR_RGBA2BGR );
+        alpha_channel = rgba_image[ :, :, 3 ];
+
+        return bgr_image, alpha_channel;
+
+    if pil_image.mode == "L":
+
+        gray_image = np.array( pil_image );
+
+        return cv2.cvtColor( gray_image, cv2.COLOR_GRAY2BGR ), None;
+
+    rgb_image = np.array( pil_image.convert( "RGB" ) );
+
+    return cv2.cvtColor( rgb_image, cv2.COLOR_RGB2BGR ), None;
+
+# ~~
+
+def read_avif_input_image(
+    input_image_file_path: str
+    ) -> tuple[ np.ndarray | None, np.ndarray | None ]:
+
+    register_avif_opener();
+
+    try:
+
+        from PIL import Image;
+
+    except ImportError as import_error:
+
+        print(
+            f"Missing AVIF dependency: {import_error}",
+            file=sys.stderr
+            );
+        print(
+            "Install with: run install_packages.bat",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+    try:
+
+        with Image.open( input_image_file_path ) as pil_image:
+
+            return get_bgr_image_and_alpha_channel_from_pil_image( pil_image );
+
+    except OSError:
+
+        return None, None;
+
+# ~~
+
 def read_input_image(
     input_image_file_path: str
     ) -> tuple[ np.ndarray | None, np.ndarray | None ]:
+
+    input_extension = os.path.splitext( input_image_file_path )[ 1 ].lower();
+
+    if input_extension == ".avif":
+
+        return read_avif_input_image( input_image_file_path );
 
     input_image = cv2.imread( input_image_file_path, cv2.IMREAD_UNCHANGED );
 
@@ -1079,9 +1427,75 @@ def format_output_image_file_name(
 
 # ~~
 
+def write_avif_output_image(
+    output_image_file_path: str,
+    output_image: np.ndarray,
+    avif_compression: int
+    ) -> None:
+
+    register_avif_opener();
+
+    try:
+
+        from PIL import Image;
+
+    except ImportError as import_error:
+
+        print(
+            f"Missing AVIF dependency: {import_error}",
+            file=sys.stderr
+            );
+        print(
+            "Install with: run install_packages.bat",
+            file=sys.stderr
+            );
+        sys.exit( 1 );
+
+    channel_count = (
+        1
+        if output_image.ndim == 2
+        else output_image.shape[ 2 ]
+        );
+
+    if channel_count == 4:
+
+        rgba_image = cv2.cvtColor( output_image, cv2.COLOR_BGRA2RGBA );
+        pil_image = Image.fromarray( rgba_image );
+
+    elif channel_count == 3:
+
+        rgb_image = cv2.cvtColor( output_image, cv2.COLOR_BGR2RGB );
+        pil_image = Image.fromarray( rgb_image );
+
+    else:
+
+        pil_image = Image.fromarray( output_image );
+
+    if avif_compression >= 100:
+
+        pil_image.save(
+            output_image_file_path,
+            format="AVIF",
+            quality=avif_compression,
+            subsampling="4:4:4",
+            range="full",
+            speed=0
+            );
+
+    else:
+
+        pil_image.save(
+            output_image_file_path,
+            format="AVIF",
+            quality=avif_compression
+            );
+
+# ~~
+
 def write_output_image(
     output_image_file_path: str,
     output_image: np.ndarray,
+    avif_compression: int,
     jpeg_compression: int,
     webp_compression: int
     ) -> None:
@@ -1097,7 +1511,16 @@ def write_output_image(
 
     output_extension = os.path.splitext( output_image_file_path )[ 1 ].lower();
 
-    if output_extension in ( ".jpg", ".jpeg" ):
+    if output_extension == ".avif":
+
+        write_avif_output_image(
+            output_image_file_path,
+            output_image,
+            avif_compression
+            );
+        is_write_successful = os.path.isfile( output_image_file_path );
+
+    elif output_extension in ( ".jpg", ".jpeg" ):
 
         is_write_successful = cv2.imwrite(
             output_image_file_path,
@@ -1133,10 +1556,15 @@ def upscale_images(
     output_image_file_path_template: str,
     upsampler: SharpRealESRGANer | None,
     maximum_ratio: float,
+    avif_compression: int,
     jpeg_compression: int,
     webp_compression: int,
+    minimum_width: int,
+    minimum_height: int,
     maximum_width: int,
     maximum_height: int,
+    maximum_upscaled_width: int,
+    maximum_upscaled_height: int,
     alpha_mode: str,
     alpha_color_bgr: tuple[ int, int, int ],
     is_skip_enabled: bool
@@ -1204,8 +1632,12 @@ def upscale_images(
                 input_width,
                 input_height,
                 maximum_ratio,
+                minimum_width,
+                minimum_height,
                 maximum_width,
-                maximum_height
+                maximum_height,
+                maximum_upscaled_width,
+                maximum_upscaled_height
                 )
             );
 
@@ -1252,7 +1684,8 @@ def upscale_images(
         if not is_loadable_image_extension( output_extension ):
 
             print(
-                "Output image file path must have a .jpg, .jpeg, .png, or .webp extension: "
+                "Output image file path must have a "
+                ".avif, .jpg, .jpeg, .png, or .webp extension: "
                 f"{output_image_file_path}",
                 file=sys.stderr
                 );
@@ -1391,6 +1824,7 @@ def upscale_images(
             write_output_image(
                 output_image_file_path,
                 output_image,
+                avif_compression,
                 jpeg_compression,
                 webp_compression
                 );
@@ -1429,11 +1863,19 @@ def main(
 
     validate_input_image_folder_path( input_image_folder_path );
     validate_maximum_ratio( command_line_arguments.max_ratio );
+    validate_minimum_dimensions(
+        command_line_arguments.min_width,
+        command_line_arguments.min_height
+        );
+    validate_maximum_upscaled_dimensions(
+        command_line_arguments.max_upscaled_width,
+        command_line_arguments.max_upscaled_height
+        );
     validate_output_image_file_name_template(
         command_line_arguments.template
         );
     alpha_color_bgr = parse_alpha_color( command_line_arguments.alpha_color );
-    jpeg_compression, webp_compression = (
+    avif_compression, jpeg_compression, webp_compression = (
         resolve_compression_settings( command_line_arguments )
         );
 
@@ -1443,6 +1885,7 @@ def main(
 
         upsampler = (
             get_upsampler(
+                command_line_arguments.model,
                 get_model_weights_file_path( command_line_arguments.model ),
                 tile_size=command_line_arguments.tile_size
                 )
@@ -1456,10 +1899,15 @@ def main(
         command_line_arguments.template,
         upsampler,
         maximum_ratio=command_line_arguments.max_ratio,
+        avif_compression=avif_compression,
         jpeg_compression=jpeg_compression,
         webp_compression=webp_compression,
+        minimum_width=command_line_arguments.min_width,
+        minimum_height=command_line_arguments.min_height,
         maximum_width=command_line_arguments.max_width,
         maximum_height=command_line_arguments.max_height,
+        maximum_upscaled_width=command_line_arguments.max_upscaled_width,
+        maximum_upscaled_height=command_line_arguments.max_upscaled_height,
         alpha_mode=command_line_arguments.alpha_mode,
         alpha_color_bgr=alpha_color_bgr,
         is_skip_enabled=command_line_arguments.skip

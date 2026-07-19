@@ -36,11 +36,16 @@ sharp_uv <input image folder path> <output image folder path> [<options>]
 --exclude <input_image_file_path_exclusion_filter>
 --template <output_image_file_path_template={d}{s}.png>
 --model <model_name=remacri>
+--min-width <minimum_width=0>
+--min-height <minimum_height=0>
 --max-ratio <maximum_ratio=4>
 --max-width <maximum_width=0>
 --max-height <maximum_height=0>
+--max-upscaled-width <maximum_upscaled_width=0>
+--max-upscaled-height <maximum_upscaled_height=0>
 --tile-size <tile_size=400|0>
 --compression <compression>
+--avif-compression <avif_compression=85>
 --jpeg-compression <jpeg_compression=85>
 --webp-compression <webp_compression=85>
 --alpha-mode <alpha_mode=lanczos|realesrnet|remove>
@@ -50,6 +55,8 @@ sharp_uv <input image folder path> <output image folder path> [<options>]
 
 ## Models
 
+- `realanime` — anime and manga
+- `realdigital` — digital art
 - `realesrgan` — sharp textures
 - `realesrnet` — smooth output with minimal invented detail
 - `remacri` — strong on skin, faces, and fine textures
@@ -63,7 +70,7 @@ sharp "IN/" "OUT/"
 ```
 
 ```
-sharp "IN/" "OUT/" --model realesrgan
+sharp "IN/" "OUT/" --model remacri
 ```
 
 ```
@@ -89,7 +96,7 @@ Run `install_packages.bat` or `install_uv_packages.bat`.
 
 ## Limitations
 
-- Only reads and writes JPEG, PNG, and WebP images.
+- Only reads and writes AVIF, JPEG, PNG, and WebP images.
 - Output resolution is limited to 4× the original resolution.
 
 ## Version
