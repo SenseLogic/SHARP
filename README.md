@@ -51,7 +51,12 @@ sharp_uv <input image folder path> <output image folder path> [<options>]
 --alpha-mode <alpha_mode=lanczos|realesrnet|remove>
 --alpha-color <alpha_color=FFFFFF>
 --skip
+--cpu
+--cuda
+--rocm
 ```
+
+If none of `--cpu`, `--cuda`, or `--rocm` is passed, Sharp uses CUDA when available, otherwise ROCm when available, otherwise CPU.
 
 ## Models
 
@@ -87,12 +92,16 @@ sharp "IN/" "OUT/" --include "**/*.jpg" --include "**/*.png" --template "{d}{s}_
 
 ## Install
 
-Run `install_packages.bat` or `install_uv_packages.bat`.
+Run one of:
+
+- `install_packages_cuda.bat` / `install_uv_packages_cuda.bat` — NVIDIA CUDA
+- `install_packages_rocm.bat` / `install_uv_packages_rocm.bat` — AMD ROCm
+- `install_packages_cpu.bat` / `install_uv_packages_cpu.bat` — CPU only
 
 ## Dependencies
 
-- Python 3.11.9
-- CUDA 12.4
+- Python 3.12.10
+- CUDA 12.4 (NVIDIA) or ROCm 7.2.1 (AMD), optional
 
 ## Limitations
 
