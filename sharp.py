@@ -48,6 +48,9 @@ except ImportError as import_error:
 DEFAULT_MODEL_NAME = "remacri";
 MODEL_SCALE = 4;
 MODEL_NAME_SET = {
+    "bsrgan",
+    "bsrnet",
+    "highfidelity",
     "realanime",
     "realdigital",
     "realesrgan",
@@ -678,6 +681,44 @@ def is_old_arch_state_dict(
 
 # ~~
 
+def is_esrgan_arch_state_dict(
+    state_dict: dict[ str, Any ]
+    ) -> bool:
+
+    return any( key.startswith( "RRDB_trunk." ) for key in state_dict );
+
+# ~~
+
+def convert_esrgan_arch_state_dict_to_rrdbnet_state_dict(
+    esrgan_arch_state_dict: dict[ str, Any ]
+    ) -> dict[ str, Any ]:
+
+    rrdbnet_state_dict: dict[ str, Any ] = {};
+
+    for key, value in esrgan_arch_state_dict.items():
+
+        if key.startswith( "module." ):
+
+            key = key[ 7: ];
+
+        rrdbnet_key = (
+            key
+            .replace( "RRDB_trunk.", "body." )
+            .replace( ".RDB1.", ".rdb1." )
+            .replace( ".RDB2.", ".rdb2." )
+            .replace( ".RDB3.", ".rdb3." )
+            .replace( "trunk_conv.", "conv_body." )
+            .replace( "upconv1.", "conv_up1." )
+            .replace( "upconv2.", "conv_up2." )
+            .replace( "HRconv.", "conv_hr." )
+            );
+
+        rrdbnet_state_dict[ rrdbnet_key ] = value;
+
+    return rrdbnet_state_dict;
+
+# ~~
+
 def convert_old_arch_state_dict_to_rrdbnet_state_dict(
     old_arch_state_dict: dict[ str, Any ]
     ) -> dict[ str, Any ]:
@@ -814,6 +855,14 @@ def get_state_dict_from_model_checkpoint(
 
         state_dict = (
             convert_old_arch_state_dict_to_rrdbnet_state_dict(
+                state_dict
+                )
+            );
+
+    elif is_esrgan_arch_state_dict( state_dict ):
+
+        state_dict = (
+            convert_esrgan_arch_state_dict_to_rrdbnet_state_dict(
                 state_dict
                 )
             );
