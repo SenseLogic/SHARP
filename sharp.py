@@ -3,6 +3,8 @@
 # -- IMPORTS
 
 from __future__ import annotations;
+from enum import Enum;
+from pathlib import PurePosixPath;
 from typing import Any;
 
 def _patch_torchvision_functional_tensor() -> None:
@@ -88,6 +90,60 @@ APPLICATION_FOLDER_PATH = os.path.dirname( os.path.abspath( __file__ ) ) + "/";
 MODEL_FOLDER_PATH = APPLICATION_FOLDER_PATH + "MODEL/";
 
 # -- TYPES
+
+class FilterType( Enum ):
+
+    Inclusion = "inclusion";
+    Exclusion = "exclusion";
+
+# ~~
+
+class Filter:
+
+    def __init__(
+        self,
+        filter_type: FilterType,
+        pattern: str
+        ) -> None:
+
+        self.type = filter_type;
+        self.pattern = pattern;
+
+# ~~
+
+class AppendFilterAction( argparse.Action ):
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | list[ str ] | None,
+        option_string: str | None = None
+        ) -> None:
+
+        filter_list = getattr( namespace, self.dest );
+
+        if filter_list is None:
+
+            filter_list = [];
+            setattr( namespace, self.dest, filter_list );
+
+        if option_string == "--include":
+
+            filter_type = FilterType.Inclusion;
+
+        else:
+
+            filter_type = FilterType.Exclusion;
+
+        filter_list.append(
+            Filter(
+                filter_type,
+                str( values )
+                )
+            );
+
+# ~~
 
 class SharpRealESRGANer( RealESRGANer ):
 
@@ -314,16 +370,17 @@ def parse_arguments(
 
     argument_parser.add_argument(
         "--include",
-        action="append",
+        dest="input_image_file_path_filter_list",
+        action=AppendFilterAction,
         default=None,
-        help="Input image file path inclusion filter (e.g. **/*.png)"
+        help="Input image file path inclusion filter (e.g. **/*.png); applied in order"
         );
 
     argument_parser.add_argument(
         "--exclude",
-        action="append",
-        default=None,
-        help="Input image file path exclusion filter"
+        dest="input_image_file_path_filter_list",
+        action=AppendFilterAction,
+        help="Input image file path exclusion filter; applied in order"
         );
 
     argument_parser.add_argument(
@@ -1445,30 +1502,66 @@ def is_loadable_image_file_path(
 
 # ~~
 
-def get_file_path_set_for_filter_list(
-    input_image_folder_path: str,
-    file_path_filter_list: list[ str ]
-    ) -> set[ str ]:
+def does_relative_file_path_match_filter_pattern(
+    relative_file_path: str,
+    filter_pattern: str
+    ) -> bool:
 
-    input_image_file_path_set: set[ str ] = set();
+    relative_file_path = normalize_file_path( relative_file_path );
+    filter_pattern = normalize_file_path( filter_pattern );
+    relative_pure_path = PurePosixPath( relative_file_path );
 
-    for file_path_filter in file_path_filter_list:
+    if relative_pure_path.match( filter_pattern ):
 
-        file_path_filter = file_path_filter.strip();
+        return True;
 
-        if file_path_filter == "":
+    # glob's **/ prefix also matches paths at the pattern root
+    if filter_pattern.startswith( "**/" ):
+
+        return relative_pure_path.match( filter_pattern[ 3: ] );
+
+    return False;
+
+# ~~
+
+def is_included_relative_file_path(
+    relative_file_path: str,
+    input_image_file_path_filter_list: list[ Filter ]
+    ) -> bool:
+
+    if not input_image_file_path_filter_list:
+
+        return True;
+
+    has_inclusion_filter = False;
+
+    for file_path_filter in input_image_file_path_filter_list:
+
+        if file_path_filter.type == FilterType.Inclusion:
+
+            has_inclusion_filter = True;
+            break;
+
+    is_included = not has_inclusion_filter;
+
+    for file_path_filter in input_image_file_path_filter_list:
+
+        pattern = file_path_filter.pattern.strip();
+
+        if pattern == "":
 
             continue;
 
-        glob_pattern = input_image_folder_path + file_path_filter;
+        if does_relative_file_path_match_filter_pattern(
+            relative_file_path,
+            pattern
+            ):
 
-        input_image_file_path_set.update(
-            normalize_file_path( input_image_file_path )
-            for input_image_file_path in glob.glob( glob_pattern, recursive=True )
-            if is_loadable_image_file_path( input_image_file_path )
-            );
+            is_included = (
+                file_path_filter.type == FilterType.Inclusion
+                );
 
-    return input_image_file_path_set;
+    return is_included;
 
 # ~~
 
@@ -1496,39 +1589,26 @@ def get_all_loadable_input_image_file_path_set(
 
 def get_input_image_file_path_list(
     input_image_folder_path: str,
-    input_image_file_path_inclusion_filter_list: list[ str ],
-    input_image_file_path_exclusion_filter_list: list[ str ]
+    input_image_file_path_filter_list: list[ Filter ]
     ) -> list[ str ]:
 
-    if input_image_file_path_inclusion_filter_list:
+    input_image_file_path_set = (
+        get_all_loadable_input_image_file_path_set(
+            input_image_folder_path
+            )
+        );
 
-        input_image_file_path_set = (
-            get_file_path_set_for_filter_list(
+    return sorted(
+        input_image_file_path
+        for input_image_file_path in input_image_file_path_set
+        if is_included_relative_file_path(
+            get_input_relative_file_path(
                 input_image_folder_path,
-                input_image_file_path_inclusion_filter_list
-                )
-            );
-
-    else:
-
-        input_image_file_path_set = (
-            get_all_loadable_input_image_file_path_set(
-                input_image_folder_path
-                )
-            );
-
-    if input_image_file_path_exclusion_filter_list:
-
-        excluded_input_image_file_path_set = (
-            get_file_path_set_for_filter_list(
-                input_image_folder_path,
-                input_image_file_path_exclusion_filter_list
-                )
-            );
-
-        input_image_file_path_set -= excluded_input_image_file_path_set;
-
-    return sorted( input_image_file_path_set );
+                input_image_file_path
+                ),
+            input_image_file_path_filter_list
+            )
+        );
 
 # ~~
 
@@ -1718,8 +1798,7 @@ def write_output_image(
 
 def upscale_images(
     input_image_folder_path: str,
-    input_image_file_path_inclusion_filter_list: list[ str ],
-    input_image_file_path_exclusion_filter_list: list[ str ],
+    input_image_file_path_filter_list: list[ Filter ],
     output_image_folder_path: str,
     output_image_file_path_template: str,
     upsampler: SharpRealESRGANer | None,
@@ -1743,36 +1822,31 @@ def upscale_images(
     input_image_file_path_list = (
         get_input_image_file_path_list(
             input_image_folder_path,
-            input_image_file_path_inclusion_filter_list,
-            input_image_file_path_exclusion_filter_list
+            input_image_file_path_filter_list
             )
         );
 
     if not input_image_file_path_list:
 
-        if input_image_file_path_inclusion_filter_list:
+        if input_image_file_path_filter_list:
 
-            inclusion_message = (
-                ", ".join( input_image_file_path_inclusion_filter_list )
+            filter_message = ", ".join(
+                (
+                    f"--include {file_path_filter.pattern}"
+                    if file_path_filter.type == FilterType.Inclusion
+                    else f"--exclude {file_path_filter.pattern}"
+                    )
+                for file_path_filter in input_image_file_path_filter_list
                 );
 
         else:
 
-            inclusion_message = "all loadable images";
-
-        exclusion_message = "";
-
-        if input_image_file_path_exclusion_filter_list:
-
-            exclusion_message = (
-                f" (exclude: {', '.join( input_image_file_path_exclusion_filter_list )})"
-                );
+            filter_message = "all loadable images";
 
         print(
             "No matching images found: "
             f"{input_image_folder_path}"
-            f"{inclusion_message}"
-            f"{exclusion_message}",
+            f"{filter_message}",
             file=sys.stderr
             );
         sys.exit( 1 );
@@ -2066,8 +2140,7 @@ def main(
 
     upscale_images(
         input_image_folder_path,
-        command_line_arguments.include or [],
-        command_line_arguments.exclude or [],
+        command_line_arguments.input_image_file_path_filter_list or [],
         output_image_folder_path,
         command_line_arguments.template,
         upsampler,

@@ -32,8 +32,8 @@ sharp_uv <input image folder path> <output image folder path> [<options>]
 ## Options
 
 ```
---include <input_image_file_path_inclusion_filter>
---exclude <input_image_file_path_exclusion_filter>
+--include <input_image_file_path_filter>
+--exclude <input_image_file_path_filter>
 --template <output_image_file_path_template={d}{s}.png>
 --model <model_name=remacri>
 --min-width <minimum_width=0>
@@ -55,6 +55,8 @@ sharp_uv <input image folder path> <output image folder path> [<options>]
 --cuda
 --rocm
 ```
+
+`--include` and `--exclude` filters are applied in order, so a later `--include` can re-include paths excluded earlier.
 
 If none of `--cpu`, `--cuda`, or `--rocm` is passed, Sharp uses CUDA when available, otherwise ROCm when available, otherwise CPU.
 
@@ -91,6 +93,10 @@ sharp "IN/" "OUT/" --include "**/*.jpg" --include "**/*.png" --template "{d}{s}_
 
 ```
 sharp "IN/" "OUT/" --include "**/*.jpg" --include "**/*.png" --template "{d}{s}_{w}x{h}.png" --max-width 3840 --compression 85 --skip
+```
+
+```
+sharp "IN/" "OUT/" --include "**/*.jpg" --include "**/*.png" --exclude "alpha/*.*" --exclude "anime/*.*" --exclude "architectural/*.*" --exclude "digital/*.*" --exclude "**/small/*.*" --include "building/small/*.*" --template "{d}{s}.jpg" --min-width 3840 --max-upscaled-width 3840 --skip
 ```
 
 ## Install
