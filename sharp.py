@@ -1189,7 +1189,24 @@ def register_avif_opener(
 
     try:
 
-        from pillow_avif import register_avif_opener as register_opener;
+        from PIL import features;
+
+        if features.check( "avif" ):
+
+            from PIL import AvifImagePlugin;  # noqa: F401
+
+            _is_avif_opener_registered = True;
+
+            return;
+
+    except ImportError:
+
+        pass;
+
+    try:
+
+        # pillow-avif-plugin registers its opener on import.
+        import pillow_avif;  # noqa: F401
 
     except ImportError as import_error:
 
@@ -1203,7 +1220,6 @@ def register_avif_opener(
             );
         sys.exit( 1 );
 
-    register_opener();
     _is_avif_opener_registered = True;
 
 # ~~
